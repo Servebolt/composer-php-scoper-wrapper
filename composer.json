@@ -1,6 +1,6 @@
 {
     "type": "composer-plugin",
-    "name": "servebolt/php-scoper-wrapper",
+    "name": "servebolt/composer-php-scoper-wrapper",
     "description": "Execute PHP Scoper.",
     "license": "MIT",
     "authors": [

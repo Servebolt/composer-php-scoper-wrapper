@@ -14,7 +14,6 @@ use Composer\IO\IOInterface;
 use Composer\Package\PackageInterface;
 use Composer\Plugin\PluginInterface;
 use Composer\Script\ScriptEvents;
-use Composer\Util\Filesystem;
 
 class PhpScoperWrapper implements
     PluginInterface,
@@ -23,6 +22,13 @@ class PhpScoperWrapper implements
     const NAMESPACE_PREFIX = 'ServeboltOptimizer_Vendor';
     const OUTPUT_FOLDER_PATH = 'vendor/vendor_prefixed/';
     const CONFIG_FOLDER_PATH = 'config/php-scoper/';
+    const PACKAGE_MATCH_REGEX = '/^servebolt\//';
+
+    const PLUGIN_SETTINGS_PROPERTY = 'php-scoper-wrapper';
+    const OUTPUT_FOLDER_PATH_PROPERTY = 'output-path';
+    const NAMESPACE_PREFIX_PROPERTY = 'namespace-prefix';
+    const ADDITIONAL_PHP_SCOPER_ARGS_PROPERTY = 'additional-php-scoper-args';
+    const PACKAGE_MATCH_REGEX_PROPERTY = 'package-match-regex';
 
     /**
      * @var Composer
@@ -88,265 +94,172 @@ class PhpScoperWrapper implements
     public static function getSubscribedEvents()
     {
         return array(
-            ScriptEvents::PRE_AUTOLOAD_DUMP => 'runPhpScoper',
+            ScriptEvents::PRE_AUTOLOAD_DUMP => array('runPhpScoper', 2),
         );
     }
 
+    /**
+     *
+     */
     public function runPhpScoper()
     {
-
+        $this->io->write(sprintf('<info>Starting PHP scoper wrapper</info>'));
+        $this->io->debug(sprintf('Looking for packages to run php-scoper in using regex "%s".', $this->getPackageMatchRegexString()));
+        if ($packagesToParse = $this->getPackagesToParse()) {
+            foreach ($packagesToParse as $packageToParse) {
+                $this->io->debug(sprintf('Looking for php-scoper config files in package "%s"', $packageToParse->getName()));
+                if ($configFiles = $this->getConfigFiles($packageToParse)) {
+                    $this->io->write(sprintf('<info>Found %s php-scoper config files in package "%s"</info>', count($configFiles), $packageToParse->getName()));
+                    foreach($configFiles as $configFilePath) {
+                        $pharPath = __DIR__ . '/php-scoper.phar';
+                        $command = sprintf('%s add-prefix --prefix=%s --output-dir=%s --config=%s %s', $pharPath, $this->getNamespacePrefix(), $this->getOutputDirPathFromConfigPath($configFilePath), $configFilePath, $this->getAdditionalArgs());
+                        $this->io->write(sprintf('Running command: %s', $command));
+                        exec($command, $output, $result);
+                        $this->io->writeRaw($output);
+                    }
+                } else {
+                    $this->io->debug(sprintf('Did not find any php-scoper config files in package "%s"', $packageToParse->getName()));
+                }
+            }
+        } else {
+            $this->io->write('Could not find any matching packages.');
+        }
         //ci/php-scoper.phar add-prefix --prefix=ServeboltOptimizer_Vendor --output-dir=vendor/vendor_prefixed/guzzlehttp --config=config/php-scoper/guzzlehttp.inc.php --force --quiet
+        $this->io->write('<info>PHP scoper wrapper is done!</info>');
     }
 
-
-
-
-
-
-
-
-
-
-
-
     /**
-     * Parse the vendor 'files' to be included before the autoloader is dumped.
-     *
-     * Note: The double realpath() calls fixes failing Windows realpath() implementation.
-     * See https://bugs.php.net/bug.php?id=72738
-     * See \Composer\Autoload\AutoloadGenerator::dump()
-     *
-     * @return void
+     * @return array
      */
-    public function parseAutoloads()
+    private function getPackagesToParse()
     {
         $composer = $this->composer;
+        $repositoryManager = $composer->getRepositoryManager();
+        $localRepository = $repositoryManager->getLocalRepository();
+        $packagesToParse = array();
 
-        $package = $composer->getPackage();
-        if (!$package) {
-            return;
-        }
+        $packages = $localRepository->getPackages();
 
-        $excludedFiles = $this->parseExcludedFiles($this->getExcludedFiles($package));
-        $excludedPsr4 = $this->getExcludedPsr4($package);
-        $excludedClassmap = $this->getExcludedClassmap($package);
-        $excludedPackages = $this->getExcludedPackages($package);
-
-        if (empty($excludedFiles) && empty($excludedPsr4) && empty($excludedClassmap) && empty($excludedPackages)) {
-            $this->io->notice('No configuration, aborting autoload exclude procedure.');
-            return;
-        }
-
-        $this->io->write('<info>Parsing packages for autoload exclusion...</info>');
-
-        $generator = $composer->getAutoloadGenerator();
-        $packages = $composer->getRepositoryManager()->getLocalRepository()->getCanonicalPackages();
-        $packageMap = $generator->buildPackageMap($composer->getInstallationManager(), $package, $packages);
-
-        $this->filterAutoloads($packageMap, $package, compact('excludedFiles', 'excludedPsr4', 'excludedClassmap', 'excludedPackages'));
-
-        $this->io->write('<info>Done parsing packages for autoload exclusion.</info>');
-    }
-
-    /**
-     * Alters packages to exclude files required in "autoload.files" by "extra.exclude-from-files".
-     *
-     * @param array $packageMap Array of `[ package, installDir-relative-to-composer.json) ]`.
-     * @param PackageInterface $mainPackage Root package instance.
-     * @param string[] $excludedItems The files to exclude from the "files" autoload mechanism.
-     * @return void
-     */
-    private function filterAutoloads(array $packageMap, PackageInterface $mainPackage, array $excludedItems)
-    {
-        extract($excludedItems);
-
-        foreach ($packageMap as $item) {
-            list($package, $installPath) = $item;
-
-            // Skip root package
-            if ($package === $mainPackage) {
+        foreach ($packages as $package) {
+            if ($package == $composer->getPackage()->getName()) {
                 continue;
             }
-
-            $this->io->debug(sprintf('Examining package %s', $package->getName()));
-
-            // Check if we should exclude the whole package
-            if (in_array($package->getName(), $excludedPackages)) {
-                $this->io->write(sprintf('<info>Excluding package "%s"</info>', $package->getName()));
-                $package->setAutoload(array());
-                continue;
+            if (preg_match($this->getPackageMatchRegexString(), $package->getName())) {
+                $packagesToParse[] = $package;
+                break;
             }
-
-            $this->autoload = $package->getAutoload();
-
-            foreach (array_keys($this->autoload) as $type) {
-                switch ($type) {
-                    case 'files':
-                        $this->io->debug('Checking package autoload - files');
-                        $this->handleFiles($excludedFiles, $package, $installPath);
-                        break;
-                    /*
-                    case 'classmap':
-                        $this->io->debug('Checking package autoload - classmap');
-                        $this->handleClassmap($excludedClassmap, $package);
-                        break;
-                    */
-                    case 'psr-4':
-                        $this->io->debug('Checking package autoload - PSR-4');
-                        $this->handlePsr4($excludedPsr4);
-                        break;
-                }
-            }
-
-            $this->cleanupEmptyItems();
-
-            $package->setAutoload($this->autoload);
         }
+        return $packagesToParse;
     }
 
     /**
-     * Clean up empty array items.
+     * @param PackageInterface $packageToParse
+     * @return array|false|string[]
      */
-    private function cleanupEmptyItems()
+    private function getConfigFiles(PackageInterface $packageToParse)
     {
-        foreach($this->autoload as $key => $value) {
-            if (empty($value)) {
-                unset($this->autoload[$key]);
-            }
+
+        $composer = $this->composer;
+        $installationManager = $composer->getInstallationManager();
+        $installPath = $installationManager->getInstallPath($packageToParse);
+
+        $configFolderPath = rtrim($installPath, '/') . '/' . trim(self::CONFIG_FOLDER_PATH, '/');
+
+        if (!file_exists($configFolderPath) || !is_dir($configFolderPath)) {
+            return false;
         }
+
+        $configFiles = glob($configFolderPath . '/*.php');
+        if (empty($configFiles)) {
+            return false;
+        }
+
+        return $configFiles;
     }
 
     /**
-     * Loop through the package classmap and see if they should be excluded.
-     *
-     * @param $excludedClassmap
-     * @param $package
+     * @param $configFilePath
+     * @return string
      */
-    /*
-    private function handleClassmap($excludedClassmap, $package)
+    private function getOutputDirPathFromConfigPath($configFilePath)
     {
-        // TODO: Add handling for classmap
-        foreach ($this->autoload['classmap'] as $key => $path) {
-            if ($this->>shouldExcludeClassmap()) {
-                $this->io->write(sprintf('<info>Excluding classmap "%s"</info>', 'classmap'));
-            }
-        }
-    }
-    */
-
-    /**
-     * Check if given file should be excluded.
-     *
-     * @param $excludedFiles
-     * @param $resolvedPath
-     * @return bool
-     */
-    private function shouldExcludeFile($excludedFiles, $resolvedPath)
-    {
-        if (isset($excludedFiles[$resolvedPath]) || $this->doFilesWildcardMatch($excludedFiles, $resolvedPath)) {
-            return true;
-        }
-        return false;
+        $outputDir = $this->getOutputDirPath();
+        $folderName = str_replace('.php', '', basename($configFilePath));
+        $folderName = str_replace('.inc', '', basename($folderName));
+        return rtrim($outputDir, '/') . '/' . $folderName;
     }
 
     /**
-     * Loop through the package files and see if they should be excluded.
-     *
-     * @param $installPath
-     * @param $excludedFiles
-     * @param $package
+     * @return string
      */
-    private function handleFiles($excludedFiles, $package, $installPath)
+    private function getPackageMatchRegexString()
     {
-        $excludedFiles = array_flip($excludedFiles);
-        if (null !== $package->getTargetDir()) {
-            $installPath = substr($installPath, 0, -strlen('/' . $package->getTargetDir()));
+        $extra = $this->getPluginSettings();
+        $property = self::PACKAGE_MATCH_REGEX_PROPERTY;
+
+        if (isset($extra[$property]) && is_array($extra[$property])) {
+            return $extra[$property];
         }
-        foreach ($this->autoload['files'] as $key => $path) {
-            if ($package->getTargetDir() && !is_readable($installPath . '/' . $path)) {
-                // add target-dir from file paths that don't have it
-                $path = $package->getTargetDir() . '/' . $path;
-            }
-            $resolvedPath = $installPath . '/' . $path;
-            $resolvedPath = strtr($resolvedPath, '\\', '/');
-            if ($this->shouldExcludeFile($excludedFiles, $resolvedPath)) {
-                $this->io->write(sprintf('<info>Excluding file "%s"</info>', $resolvedPath));
-                unset($this->autoload['files'][$key]);
-            }
-        }
+
+        return self::PACKAGE_MATCH_REGEX;
     }
 
     /**
-     * Check if given namespace should be excluded.
-     *
-     * @param $excludedPsr4
-     * @param $namespace
-     * @return bool
+     * @return string
      */
-    private function shouldExcludePsr4($excludedPsr4, $namespace)
+    private function getOutputDirPath()
     {
-        foreach ($excludedPsr4 as $match) {
-            $isWildcard = strpos($match, '*') !== false;
-            if ($isWildcard) {
-                $match = rtrim($match, '*');
-                if (preg_match('/^' . preg_quote($match) . '/', $namespace)) {
-                    return true;
-                }
-            } else {
-                if ($namespace == $match) {
-                    return true;
-                }
-            }
+        $extra = $this->getPluginSettings();
+        $property = self::OUTPUT_FOLDER_PATH_PROPERTY;
+
+        if (isset($extra[$property]) && is_array($extra[$property])) {
+            return $extra[$property];
         }
-        return false;
+
+        return self::OUTPUT_FOLDER_PATH;
     }
 
     /**
-     * Loop through the package psr4 namespaces and see if they should be excluded.
-     *
-     * @param $excludedPsr4
+     * @return string
      */
-    private function handlePsr4($excludedPsr4)
+    private function getNamespacePrefix()
     {
-        foreach (array_keys($this->autoload['psr-4']) as $namespace) {
-            if ($this->shouldExcludePsr4($excludedPsr4, $namespace)) {
-                $this->io->write(sprintf('<info>Excluding namespace "%s"</info>', $namespace));
-                unset($this->autoload['psr-4'][$namespace]);
-            }
+        $extra = $this->getPluginSettings();
+        $property = self::NAMESPACE_PREFIX_PROPERTY;
+
+        if (isset($extra[$property]) && is_array($extra[$property])) {
+            return $extra[$property];
         }
+
+        return self::NAMESPACE_PREFIX;
     }
 
     /**
-     * Wildcard match install path vs excluded file path.
-     *
-     * @param $excludedFiles
-     * @param $installPath
-     * @return bool
+     * @return string
      */
-    private function doFilesWildcardMatch($excludedFiles, $installPath)
+    private function getAdditionalArgs()
     {
-        $excludedWildcardPaths = array_filter(array_flip($excludedFiles), function ($item) {
-            return strpos($item, '*') !== false;
-        });
-        $excludedWildcardPaths = array_map(function ($item) {
-            return trim($item, '*');
-        }, $excludedWildcardPaths);
-        foreach ($excludedWildcardPaths as $excludedWildcardPath) {
-            if (strpos($installPath, $excludedWildcardPath) === 0) {
-                return true;
-            }
+        $extra = $this->getPluginSettings();
+        $property = self::ADDITIONAL_PHP_SCOPER_ARGS_PROPERTY;
+
+        if (isset($extra[$property]) && is_array($extra[$property])) {
+            return $extra[$property];
         }
-        return false;
+
+        return implode(' ', [
+            '--force',
+            '--quiet'
+        ]);
     }
 
     /**
      * Get plugin settings.
      *
-     * @param $package
      * @return array|false
      */
-    private function getPluginSettings($package)
+    private function getPluginSettings()
     {
+        $package = $this->composer->getPackage();
         $extra = $package->getExtra();
         $property = self::PLUGIN_SETTINGS_PROPERTY;
 
@@ -355,102 +268,5 @@ class PhpScoperWrapper implements
         }
 
         return false;
-    }
-
-    /**
-     * Gets a list of files the root package wants to exclude in the autoload files.
-     *
-     * @param  PackageInterface $package Root package instance.
-     * @return string[] Retuns the list of excluded files otherwise NULL if misconfigured or undefined.
-     */
-    private function getExcludedFiles(PackageInterface $package)
-    {
-        $extra = $this->getPluginSettings($package);
-        $property = self::EXCLUDE_FILES_PROPERTY;
-
-        if (isset($extra[$property]) && is_array($extra[$property])) {
-            return $extra[$property];
-        }
-
-        return array();
-    }
-
-
-    /**
-     * Gets a list of packages the root package wants to exclude in the autoload files.
-     *
-     * @param  PackageInterface $package Root package instance.
-     * @return string[] Retuns the list of excluded files otherwise NULL if misconfigured or undefined.
-     */
-    private function getExcludedPackages(PackageInterface $package)
-    {
-        $property = self::EXCLUDE_PACKAGES_PROPERTY;
-        $extra = $this->getPluginSettings($package);
-
-        if (isset($extra[$property]) && is_array($extra[$property])) {
-            return $extra[$property];
-        }
-
-        return array();
-    }
-
-    /**
-     * Gets a list of psr4-namespaces the root package wants to exclude in the autoload files.
-     *
-     * @param  PackageInterface $package Root package instance.
-     * @return string[] Retuns the list of excluded files otherwise NULL if misconfigured or undefined.
-     */
-    private function getExcludedPsr4(PackageInterface $package)
-    {
-        $property = self::EXCLUDE_PSR4_PROPERTY;
-        $extra = $this->getPluginSettings($package);
-
-        if (isset($extra[$property]) && is_array($extra[$property])) {
-            return $extra[$property];
-        }
-
-        return array();
-    }
-
-    /**
-     * Gets a list of class maps the root package wants to exclude in the autoload files.
-     *
-     * @param  PackageInterface $package Root package instance.
-     * @return string[] Retuns the list of excluded files otherwise NULL if misconfigured or undefined.
-     */
-    private function getExcludedClassmap(PackageInterface $package)
-    {
-        $property = self::EXCLUDE_CLASSMAP_PROPERTY;
-        $extra = $this->getPluginSettings($package);
-
-        if (isset($extra[$property]) && is_array($extra[$property])) {
-            return $extra[$property];
-        }
-
-        return array();
-    }
-
-    /**
-     * Prepends the vendor directory to each path in "extra.exclude-from-files".
-     *
-     * @param  string[] $paths Array of paths relative to the composer manifest.
-     * @return string[] Retuns the array of paths, prepended with the vendor directory.
-     */
-    private function parseExcludedFiles(array $paths)
-    {
-        if (empty($paths)) {
-            return $paths;
-        }
-
-        $filesystem = new Filesystem();
-        $config     = $this->composer->getConfig();
-        $vendorPath = $filesystem->normalizePath(realpath(realpath($config->get('vendor-dir'))));
-
-        foreach ($paths as &$path) {
-            $path = preg_replace('{/+}', '/', trim(strtr($path, '\\', '/'), '/'));
-            $path = $vendorPath . '/' . $path;
-        }
-
-        return $paths;
     }
 }
