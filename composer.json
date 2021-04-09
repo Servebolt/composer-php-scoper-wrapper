@@ -1,0 +1,39 @@
+{
+    "type": "composer-plugin",
+    "name": "servebolt/php-scoper-wrapper",
+    "description": "Execute PHP Scoper.",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Robert Sæther",
+            "email": "robert@servebolt.com"
+        }
+    ],
+    "require": {
+        "php": "^7.0 || ^8.0",
+        "composer-plugin-api": "^1.0 || ^2.0"
+    },
+    "require-dev": {
+        "composer/composer": "^1.0 || ^2.0",
+        "symfony/phpunit-bridge": "^4.2 || ^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Servebolt\\Composer\\": "src/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-main": "2.x-dev"
+        },
+        "class": "Servebolt\\Composer\\PhpScoperWrapper"
+    },
+    "config": {
+        "platform": {
+            "php": "7.3"
+        },
+        "platform-check": false
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}
