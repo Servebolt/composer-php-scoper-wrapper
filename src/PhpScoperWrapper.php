@@ -22,7 +22,7 @@ class PhpScoperWrapper implements
     EventSubscriberInterface
 {
     const NAMESPACE_PREFIX = 'ServeboltOptimizer_Vendor';
-    const OUTPUT_FOLDER_NAME = 'vendor/vendor_prefixed';
+    const OUTPUT_FOLDER_NAME = 'vendor_prefixed';
     const CONFIG_FOLDER_PATH = 'config/php-scoper/';
     const PACKAGE_MATCH_REGEX = '/^servebolt\//';
     const REPOSITORY_MATCH_REGEX = '/servebolt/';
@@ -257,7 +257,7 @@ class PhpScoperWrapper implements
 
     /**
      * List PHP-files in given folder.
-     * 
+     *
      * @param $folderPath
      * @return array|false
      */
