@@ -93,6 +93,12 @@ class PhpScoperWrapper implements
     public static function getSubscribedEvents()
     {
         return array(
+            ScriptEvents::PRE_INSTALL_CMD => array(
+                array('ensurePrefixedVendorFolderExists', 2),
+            ),
+            ScriptEvents::PRE_UPDATE_CMD => array(
+                array('ensurePrefixedVendorFolderExists', 2),
+            ),
             ScriptEvents::PRE_AUTOLOAD_DUMP => array(
                 array('ensurePrefixedVendorFolderExists', 2),
                 array('runPhpScoper', 2),
